@@ -101,7 +101,7 @@ save_configuration() {
 print_menu() {
   clear
   echo "Configuration Menu:"
-  echo "1. Reconfigure BIOS"
+  echo "1. Reconfigure BIOS (including download)"
   echo "2. Reconfigure ISO"
   echo "3. Enable PCI passthrough"
   echo "4. Disable PCI passthrough"
@@ -114,24 +114,42 @@ print_menu() {
 # Function to prompt the user for BIOS selection
 select_bios() {
   echo "Reconfiguring BIOS..."
+
   detect_bios_files
 
-  # Display available BIOS files
-  echo "BIOS files available:"
-  for index in "${!bios_files[@]}"; do
-    bios_file="${bios_files[index]}"
-    echo "$index: $bios_file"
-  done
+  if [ ${#bios_files[@]} -gt 0 ]; then
+    # Display available BIOS files
+    echo "BIOS files available:"
+    for index in "${!bios_files[@]}"; do
+      bios_file="${bios_files[index]}"
+      echo "$index: $bios_file"
+    done
 
-  # Prompt the user to select a BIOS file
-  read -r -p "Select a BIOS file (enter the number): " bios_index
+    # Prompt the user to select a BIOS file
+    read -r -p "Select a BIOS file (enter the number): " bios_index
 
-  # Validate user choice
-  if [[ "$bios_index" =~ ^[0-9]+$ ]] && [ "$bios_index" -lt "${#bios_files[@]}" ]; then
-    bios_path="${bios_files[bios_index]}"
-    bios_selected=true
+    # Validate user choice
+    if [[ "$bios_index" =~ ^[0-9]+$ ]] && [ "$bios_index" -lt "${#bios_files[@]}" ]; then
+      bios_path="${bios_files[bios_index]}"
+      bios_selected=true
+    else
+      echo "Invalid BIOS file selected. Please try again."
+    fi
   else
-    echo "Invalid BIOS file selected. Please try again."
+    # Offer the option to download the BIOS file
+    read -r -p "BIOS file not found. Do you want to download it? (y/n): " download_bios
+
+    if [[ "$download_bios" =~ ^[Yy]$ ]]; then
+      echo "Downloading BIOS file..."
+      wget -O up050404 "http://web.archive.org/web/20071021223056/http://www.bplan-gmbh.de/up050404/up050404"
+      echo "Extracting ROM file from the downloaded file..."
+      tail -c +85581 up050404 | head -c 524288 >pegasos2.rom
+      bios_path="pegasos2.rom"
+      bios_selected=true
+    else
+      echo "No BIOS file selected. Exiting."
+      exit 1
+    fi
   fi
 }
 
@@ -174,39 +192,42 @@ enable_pci_passthrough() {
   done
 
   # Prompt the user to select specific PCI devices or choose automatic pass-through
-  read -r -p "Select specific PCI devices (enter numbers separated by space) or choose automatic pass-through (A): " selection
+  read -r -p "Select specific PCI devices (enter numbers separated by space) or choose automatic pass-through (A): " selected_pci_indices
 
-  # Validate user choice
-  if [[ "$selected_pci_indices" =~ ^[0-9\ ]+$ ]]; then
-    selected_pci_indices=$selection
-  elif [[ "$selection" =~ ^[Aa]$ ]]; then
-    selected_pci_indices="auto"
-  else
-    echo "Invalid input. Exiting."
-    exit 1
+  # Validate user choices
+  if [[ "$selected_pci_indices" == "A" ]]; then
+    # Determine the drive controller of the boot drive
+    determine_boot_drive_controller
+
+    # Filter out the boot drive controller from the available PCI devices
+    filtered_pci_devices=()
+    for pci_device in "${available_pci_devices[@]}"; do
+      if [[ "$pci_device" != "$boot_drive_controller" ]]; then
+        filtered_pci_devices+=("$pci_device")
+      fi
+    done
+
+    if [[ "${#filtered_pci_devices[@]}" -eq 0 ]]; then
+      echo "No PCI devices available for automatic pass-through. Exiting."
+      exit 1
+    fi
+
+    selected_pci_indices=$(printf '%s\n' "${filtered_pci_devices[@]}")
   fi
 
-  if [[ "$selected_pci_indices" == "auto" ]]; then
-  # Determine the drive controller of the boot drive
-  determine_boot_drive_controller
-
-  # Filter out the boot drive controller and the boot display
-  filtered_pci_devices=()
-  for pci_device in "${available_pci_devices[@]}"; do
-    if [[ "$pci_device" != "$boot_drive_controller" ]]; then
-      filtered_pci_devices+=("$pci_device")
+  valid_pci_devices=""
+  for index in $selected_pci_indices; do
+    if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -lt "${#available_pci_devices[@]}" ]; then
+      valid_pci_devices+=" ${available_pci_devices[index]}"
     fi
   done
 
-  if [[ "${#filtered_pci_devices[@]}" -eq 0 ]]; then
-    echo "No PCI devices available for automatic pass-through. Exiting."
+  if [ -z "$valid_pci_devices" ]; then
+    echo "No valid PCI devices selected. Exiting."
     exit 1
   fi
 
-  selected_pci_indices=$(printf '%s\n' "${filtered_pci_devices[@]}")
-fi
-
-  pci_device_options="$selected_pci_indices"
+  pci_device_options="$valid_pci_devices"
 
   # Detach PCI devices from their current driver
   for pci_device in $pci_device_options; do
