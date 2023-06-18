@@ -137,6 +137,7 @@ select_bios() {
 }
 
 # Function to prompt the user for ISO selection
+# Function to prompt the user for ISO selection
 select_iso() {
   echo "Reconfiguring ISO..."
   detect_iso_files
@@ -148,15 +149,27 @@ select_iso() {
     echo "$index: $iso_file"
   done
 
-  # Prompt the user to select an ISO file
-  read -r -p "Select an ISO file (enter the number): " iso_index
+  # Prompt the user to select an ISO file or download the MorphOS installer/trial ISO
+  read -r -p "Select an ISO file (enter the number) or enter 'd' to download the MorphOS installer/trial ISO: " iso_index
 
   # Validate user choice
   if [[ "$iso_index" =~ ^[0-9]+$ ]] && [ "$iso_index" -lt "${#iso_files[@]}" ]; then
     iso_path="${iso_files[iso_index]}"
     iso_selected=true
+  elif [ "$iso_index" == "d" ]; then
+    # Download the MorphOS installer/trial ISO
+    iso_url="https://morphos-team.net/morphos-3.18.iso"
+    iso_filename="morphos-3.18.iso"
+    echo "Downloading MorphOS installer/trial ISO..."
+    if curl -L -o "$iso_filename" "$iso_url"; then
+      iso_path="./$iso_filename"
+      iso_selected=true
+      echo "Download successful."
+    else
+      echo "Download failed. Please try again."
+    fi
   else
-    echo "Invalid ISO file selected. Please try again."
+    echo "Invalid selection. Please try again."
   fi
 }
 
