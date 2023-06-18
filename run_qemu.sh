@@ -53,18 +53,6 @@ detect_bios_files() {
   done < <(find . -maxdepth 1 -type f -name "*.rom" -print0)
 }
 
-# Function to determine the drive controller of the boot drive
-determine_boot_drive_controller() {
-  boot_drive_controller=""
-  while IFS= read -r line; do
-    read -r drive mount_point _ <<< "$line"
-    if [[ $mount_point == "/" || $mount_point == "/boot" ]]; then
-      boot_drive_controller=$(basename "$drive")
-      break
-    fi
-  done < <(mount | grep -E '(/|/boot) ' | awk '{print $1,$2}')
-}
-
 # Function to load the configuration from the config file
 load_configuration() {
   if [ -f "$config_file" ]; then
@@ -97,19 +85,31 @@ save_configuration() {
   echo "pci_passthrough_enabled=\"$pci_passthrough_enabled\"" >> "$config_file"
 }
 
+# Function to print the main menu
+print_main_menu() {
+  clear
+  echo "Main Menu:"
+  echo "1. Configuration Menu"
+  echo "2. Run QEMU"
+  echo "3. Exit"
+}
+
 # Function to print the configuration menu
-print_menu() {
+print_configuration_menu() {
   clear
   echo "Configuration Menu:"
   echo "1. Reconfigure BIOS"
   echo "2. Reconfigure ISO"
-  echo "3. Enable PCI passthrough (Automatic)"
-  echo "4. Enable PCI passthrough (Manual)"
-  echo "5. Disable PCI passthrough"
-  echo "6. Configure memory"
-  echo "7. View current configuration"
-  echo "8. Continue with existing configuration"
-  echo "9. Exit"
+  echo "3. Configure PCI passthrough"
+  if $pci_passthrough_enabled; then
+    echo "4. Disable PCI passthrough (Currently: Enabled)"
+  else
+    echo "4. Enable PCI passthrough (Currently: Disabled)"
+  fi
+  echo "5. Configure memory"
+  echo "6. View current configuration"
+  echo "7. Save and return to main menu"
+  echo "8. Return to main menu without saving"
 }
 
 # Function to prompt the user for BIOS selection
@@ -160,111 +160,71 @@ select_iso() {
   fi
 }
 
-# Function to enable PCI passthrough (Automatic)
-enable_pci_passthrough_auto() {
+# Function to configure PCI passthrough for specific devices
+configure_pci_passthrough() {
   detect_pci_devices
 
-  # Exclude boot display and boot controller from automatic passthrough
-  local excluded_devices=()
-  excluded_devices+=("boot_display")
-  excluded_devices+=("boot_controller")
-
-  # Filter available PCI devices for automatic passthrough
-  local available_devices=()
-  for pci_device in "${available_pci_devices[@]}"; do
-    local device_info=$(get_device_info "$pci_device")
-    local device_name=$(echo "$device_info" | awk -F ': ' '{print $2}')
-    if ! [[ " ${excluded_devices[@]} " =~ " ${device_name// /} " ]]; then
-      available_devices+=("$pci_device")
-    fi
-  done
-
-  # Detach PCI devices from their current driver
-  for pci_device in "${available_devices[@]}"; do
-    # Run lspci -s to find the slot information and driver name
-    slot_info=$(lspci -s "$pci_device" | awk '{print $1}')
-    driver_name=$(basename "$(readlink "/sys/bus/pci/devices/$pci_device/driver")")
-    # Detach the PCI device from the current driver
-    detach_pci_device "$slot_info" "$driver_name"
-  done
-
-  # Attach PCI devices to VFIO driver
-  for pci_device in "${available_devices[@]}"; do
-    # Run lspci -v -s to find the vendor ID and device code
-    vendor_id=$(lspci -v -s "$pci_device" | awk -F '[][]' '/Subsys/{print $2}')
-    device_code=$(lspci -v -s "$pci_device" | awk -F '[][]' '/Subsys/{print $4}')
-    # Attach the PCI device to the VFIO driver
-    attach_pci_device "$vendor_id" "$device_code"
-  done
-
-  pci_passthrough_enabled=true
-
-  echo "Automatic PCI passthrough enabled for all devices except boot display and boot controller."
-}
-
-# Function to enable PCI passthrough (Manual)
-enable_pci_passthrough_manual() {
-  detect_pci_devices
+  # Exclude boot drive controller and display
+  excluded_devices=("boot_drive_controller" "display")
 
   # Display available PCI devices
   echo "PCI devices available for passthrough:"
   for index in "${!available_pci_devices[@]}"; do
     pci_device="${available_pci_devices[index]}"
-    echo "$index: $pci_device"
-    device_info=$(get_device_info "$pci_device")
-    echo "$device_info"
-    echo
-  done
-
-  # Prompt the user to select specific PCI devices
-  read -r -p "Select specific PCI devices for passthrough (space-separated numbers): " selected_pci_indices
-
-  # Validate user choices
-  valid_pci_devices=""
-  for index in $selected_pci_indices; do
-    if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -lt "${#available_pci_devices[@]}" ]; then
-      valid_pci_devices+=" ${available_pci_devices[index]}"
+    if [[ ! " ${excluded_devices[@]} " =~ " ${pci_device} " ]]; then
+      echo "$index: $pci_device"
+      device_info=$(get_device_info "$pci_device")
+      echo "$device_info"
+      echo
     fi
   done
 
-  if [ -z "$valid_pci_devices" ]; then
-    echo "No valid PCI devices selected. Exiting."
-    exit 1
+  # Prompt the user to select specific PCI devices or choose automatic passthrough
+  read -r -p "Select specific PCI devices for passthrough (space-separated numbers) or press Enter for automatic passthrough: " selected_pci_indices
+
+  if [ -z "$selected_pci_indices" ]; then
+    # Automatic passthrough
+    pci_device_options=""
+    for index in "${!available_pci_devices[@]}"; do
+      pci_device="${available_pci_devices[index]}"
+      if [[ ! " ${excluded_devices[@]} " =~ " ${pci_device} " ]]; then
+        pci_device_options+=" $pci_device"
+      fi
+    done
+    echo "Automatically passthrough enabled for all available PCI devices except boot drive controller and display."
+  else
+    # Manual passthrough
+    # Validate user choices
+    valid_pci_devices=""
+    for index in $selected_pci_indices; do
+      if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -lt "${#available_pci_devices[@]}" ]; then
+        pci_device="${available_pci_devices[index]}"
+        if [[ ! " ${excluded_devices[@]} " =~ " ${pci_device} " ]]; then
+          valid_pci_devices+=" ${available_pci_devices[index]}"
+        fi
+      fi
+    done
+
+    if [ -z "$valid_pci_devices" ]; then
+      echo "No valid PCI devices selected. Returning to the previous menu."
+      return
+    fi
+
+    pci_device_options="$valid_pci_devices"
+    echo "PCI passthrough configured for selected devices."
   fi
 
-  pci_device_options="$valid_pci_devices"
-
-  # Detach PCI devices from their current driver
-  for pci_device in $pci_device_options; do
-    # Run lspci -s to find the slot information and driver name
-    slot_info=$(lspci -s "$pci_device" | awk '{print $1}')
-    driver_name=$(basename "$(readlink "/sys/bus/pci/devices/$pci_device/driver")")
-    # Detach the PCI device from the current driver
-    detach_pci_device "$slot_info" "$driver_name"
-  done
-
-  # Attach PCI devices to VFIO driver
-  for pci_device in $pci_device_options; do
-    # Run lspci -v -s to find the vendor ID and device code
-    vendor_id=$(lspci -v -s "$pci_device" | awk -F '[][]' '/Subsys/{print $2}')
-    device_code=$(lspci -v -s "$pci_device" | awk -F '[][]' '/Subsys/{print $4}')
-    # Attach the PCI device to the VFIO driver
-    attach_pci_device "$vendor_id" "$device_code"
-  done
-
   pci_passthrough_enabled=true
-
-  echo "Manual PCI passthrough enabled for selected devices."
 }
-
-# Function to disable PCI passthrough
-disable_pci_passthrough() {
-  # Clear the stored PCI device options
-  pci_device_options=""
-
-  pci_passthrough_enabled=false
-
-  echo "PCI passthrough disabled."
+# Function to toggle the enable/disable state of PCI passthrough
+toggle_pci_passthrough() {
+  if $pci_passthrough_enabled; then
+    pci_passthrough_enabled=false
+    echo "PCI passthrough disabled."
+  else
+    pci_passthrough_enabled=true
+    echo "PCI passthrough enabled."
+  fi
 }
 
 # Function to configure memory
@@ -316,7 +276,7 @@ view_configuration() {
   read -n 1 -s -r -p "Press any key to continue..."
 }
 
-# Function to exit the script
+# Function to exit the script without saving
 exit_script() {
   echo "Exiting..."
   exit 0
@@ -340,7 +300,9 @@ run_qemu() {
 
   # Add PCI device options if configured and enabled
   if [ -n "$pci_device_options" ] && $pci_passthrough_enabled; then
-    qemu_cmd+=" $pci_device_options"
+    for pci_device in $pci_device_options; do
+      qemu_cmd+=" -device vfio-pci,host=$pci_device"
+    done
   fi
 
   echo "Starting QEMU with the following command:"
@@ -354,8 +316,8 @@ run_qemu() {
     # Start QEMU with the selected configuration
     eval "$qemu_cmd"
 
-    # Return to the configuration menu after QEMU exits
-    echo "QEMU has exited. Returning to the configuration menu..."
+    # Return to the main menu after QEMU exits
+    echo "QEMU has exited. Returning to the main menu..."
     read -n 1 -s -r -p "Press any key to continue..."
   fi
 }
@@ -379,40 +341,60 @@ fi
 
 # Main loop
 while true; do
-  print_menu
+  print_main_menu
 
-  read -r -p "Select an option: " choice
+  # Set timeout to 10 seconds for user input
+  read -r -t 10 -p "Select an option (default: 2): " choice
 
   case $choice in
     "1")
-      select_bios
+      while true; do
+        print_configuration_menu
+
+        read -r -p "Select an option: " config_choice
+
+        case $config_choice in
+          "1")
+            select_bios
+            ;;
+
+          "2")
+            select_iso
+            ;;
+
+          "3")
+            configure_pci_passthrough
+            ;;
+
+          "4")
+            toggle_pci_passthrough
+            ;;
+
+          "5")
+            configure_memory
+            ;;
+
+          "6")
+            view_configuration
+            ;;
+
+          "7")
+            save_configuration
+            break 2 # Exit the inner loop and return to the main menu
+            ;;
+
+          "8")
+            break 2 # Exit the inner loop and return to the main menu
+            ;;
+
+          *)
+            echo "Invalid choice. Please try again."
+            ;;
+        esac
+      done
       ;;
 
-    "2")
-      select_iso
-      ;;
-
-    "3")
-      enable_pci_passthrough_auto
-      ;;
-
-    "4")
-      enable_pci_passthrough_manual
-      ;;
-
-    "5")
-      disable_pci_passthrough
-      ;;
-
-    "6")
-      configure_memory
-      ;;
-
-    "7")
-      view_configuration
-      ;;
-
-    "8")
+    "2" | "")
       if $bios_selected && $iso_selected && $memory_selected; then
         run_qemu
       else
@@ -420,7 +402,7 @@ while true; do
       fi
       ;;
 
-    "9")
+    "3")
       exit_script
       ;;
 
