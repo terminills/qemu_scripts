@@ -124,17 +124,34 @@ select_bios() {
     echo "$index: $bios_file"
   done
 
-  # Prompt the user to select a BIOS file
-  read -r -p "Select a BIOS file (enter the number): " bios_index
+  # Prompt the user to select a BIOS file or download the Pegasos ROM
+  read -r -p "Select a BIOS file (enter the number) or enter 'd' to download the Pegasos ROM: " bios_index
 
   # Validate user choice
   if [[ "$bios_index" =~ ^[0-9]+$ ]] && [ "$bios_index" -lt "${#bios_files[@]}" ]; then
     bios_path="${bios_files[bios_index]}"
     bios_selected=true
+  elif [ "$bios_index" == "d" ]; then
+    # Download the Pegasos ROM
+    bios_url="http://web.archive.org/web/20071021223056/http://www.bplan-gmbh.de/up050404/up050404"
+    bios_filename="up050404"
+    echo "Downloading Pegasos ROM..."
+    if curl -L -o "$bios_filename" "$bios_url"; then
+      bios_path="./pegasos2.rom"
+      bios_selected=true
+      echo "Download successful."
+      # Extract the ROM
+      echo "Extracting Pegasos ROM..."
+      tail -c +85581 "$bios_filename" | head -c 524288 > "pegasos2.rom"
+      echo "Extraction successful."
+    else
+      echo "Download failed. Please try again."
+    fi
   else
-    echo "Invalid BIOS file selected. Please try again."
+    echo "Invalid selection. Please try again."
   fi
 }
+
 
 # Function to prompt the user for ISO selection
 # Function to prompt the user for ISO selection
@@ -393,11 +410,11 @@ while true; do
 
           "7")
             save_configuration
-            break 2 # Exit the inner loop and return to the main menu
+            break # Return to the main menu
             ;;
 
           "8")
-            break 2 # Exit the inner loop and return to the main menu
+            break # Return to the main menu
             ;;
 
           *)
