@@ -95,7 +95,6 @@ save_configuration() {
   echo "pci_device_options=\"$pci_device_options\"" >> "$config_file"
   echo "memory=\"$memory\"" >> "$config_file"
   echo "pci_passthrough_enabled=\"$pci_passthrough_enabled\"" >> "$config_file"
-  echo "iso_selected=\"$iso_selected\"" >> "$config_file"
 }
 
 # Function to print the configuration menu
@@ -104,12 +103,12 @@ print_menu() {
   echo "Configuration Menu:"
   echo "1. Reconfigure BIOS"
   echo "2. Reconfigure ISO"
-  echo "3. Enable PCI passthrough"
-  echo "4. Disable PCI passthrough"
-  echo "5. Configure memory"
-  echo "6. View current configuration"
-  echo "7. Continue with existing configuration"
-  echo "8. Download MorphOS trial ISO"
+  echo "3. Enable PCI passthrough (Automatic)"
+  echo "4. Enable PCI passthrough (Manual)"
+  echo "5. Disable PCI passthrough"
+  echo "6. Configure memory"
+  echo "7. View current configuration"
+  echo "8. Continue with existing configuration"
   echo "9. Exit"
 }
 
@@ -132,8 +131,6 @@ select_bios() {
   if [[ "$bios_index" =~ ^[0-9]+$ ]] && [ "$bios_index" -lt "${#bios_files[@]}" ]; then
     bios_path="${bios_files[bios_index]}"
     bios_selected=true
-    save_configuration
-    echo "BIOS reconfigured."
   else
     echo "Invalid BIOS file selected. Please try again."
   fi
@@ -158,15 +155,55 @@ select_iso() {
   if [[ "$iso_index" =~ ^[0-9]+$ ]] && [ "$iso_index" -lt "${#iso_files[@]}" ]; then
     iso_path="${iso_files[iso_index]}"
     iso_selected=true
-    save_configuration
-    echo "ISO reconfigured."
   else
     echo "Invalid ISO file selected. Please try again."
   fi
 }
 
-# Function to enable PCI passthrough
-enable_pci_passthrough() {
+# Function to enable PCI passthrough (Automatic)
+enable_pci_passthrough_auto() {
+  detect_pci_devices
+
+  # Exclude boot display and boot controller from automatic passthrough
+  local excluded_devices=()
+  excluded_devices+=("boot_display")
+  excluded_devices+=("boot_controller")
+
+  # Filter available PCI devices for automatic passthrough
+  local available_devices=()
+  for pci_device in "${available_pci_devices[@]}"; do
+    local device_info=$(get_device_info "$pci_device")
+    local device_name=$(echo "$device_info" | awk -F ': ' '{print $2}')
+    if ! [[ " ${excluded_devices[@]} " =~ " ${device_name// /} " ]]; then
+      available_devices+=("$pci_device")
+    fi
+  done
+
+  # Detach PCI devices from their current driver
+  for pci_device in "${available_devices[@]}"; do
+    # Run lspci -s to find the slot information and driver name
+    slot_info=$(lspci -s "$pci_device" | awk '{print $1}')
+    driver_name=$(basename "$(readlink "/sys/bus/pci/devices/$pci_device/driver")")
+    # Detach the PCI device from the current driver
+    detach_pci_device "$slot_info" "$driver_name"
+  done
+
+  # Attach PCI devices to VFIO driver
+  for pci_device in "${available_devices[@]}"; do
+    # Run lspci -v -s to find the vendor ID and device code
+    vendor_id=$(lspci -v -s "$pci_device" | awk -F '[][]' '/Subsys/{print $2}')
+    device_code=$(lspci -v -s "$pci_device" | awk -F '[][]' '/Subsys/{print $4}')
+    # Attach the PCI device to the VFIO driver
+    attach_pci_device "$vendor_id" "$device_code"
+  done
+
+  pci_passthrough_enabled=true
+
+  echo "Automatic PCI passthrough enabled for all devices except boot display and boot controller."
+}
+
+# Function to enable PCI passthrough (Manual)
+enable_pci_passthrough_manual() {
   detect_pci_devices
 
   # Display available PCI devices
@@ -216,8 +253,8 @@ enable_pci_passthrough() {
   done
 
   pci_passthrough_enabled=true
-  save_configuration
-  echo "PCI passthrough enabled."
+
+  echo "Manual PCI passthrough enabled for selected devices."
 }
 
 # Function to disable PCI passthrough
@@ -226,7 +263,7 @@ disable_pci_passthrough() {
   pci_device_options=""
 
   pci_passthrough_enabled=false
-  save_configuration
+
   echo "PCI passthrough disabled."
 }
 
@@ -245,32 +282,22 @@ configure_memory() {
     "1")
       memory="256M"
       memory_selected=true
-      save_configuration
-      echo "Memory configured: 256M."
       ;;
     "2")
       memory="512M"
       memory_selected=true
-      save_configuration
-      echo "Memory configured: 512M."
       ;;
     "3")
       memory="1G"
       memory_selected=true
-      save_configuration
-      echo "Memory configured: 1G."
       ;;
     "4")
       memory="1.5G"
       memory_selected=true
-      save_configuration
-      echo "Memory configured: 1.5G."
       ;;
     "5")
       memory="2G"
       memory_selected=true
-      save_configuration
-      echo "Memory configured: 2G."
       ;;
     *)
       echo "Invalid memory option. Please try again."
@@ -286,7 +313,6 @@ view_configuration() {
   echo "PCI Device Options: $pci_device_options"
   echo "Memory: $memory"
   echo "PCI Passthrough Enabled: $pci_passthrough_enabled"
-  echo "ISO Selected: $iso_selected"
   read -n 1 -s -r -p "Press any key to continue..."
 }
 
@@ -298,18 +324,6 @@ exit_script() {
 
 # Function to run QEMU with the selected configuration
 run_qemu() {
-  if $pci_passthrough_enabled; then
-    # Determine the drive controller of the boot drive
-    determine_boot_drive_controller
-
-    # Check if the boot drive controller is in the PCI device options
-    if [[ -n $boot_drive_controller && "$pci_device_options" == *"$boot_drive_controller"* ]]; then
-      echo "Cannot pass through the drive controller of the boot drive."
-      read -n 1 -s -r -p "Press any key to continue..."
-      return
-    fi
-  fi
-
   # Build the full QEMU command
   qemu_cmd="qemu-system-ppc -L pc-bios -M pegasos2"
   qemu_cmd+=" -bios \"$bios_path\""
@@ -346,16 +360,6 @@ run_qemu() {
   fi
 }
 
-# Function to download the MorphOS trial ISO
-download_morphos_trial_iso() {
-  echo "Downloading MorphOS trial ISO..."
-  curl -o morphos-3.18.iso https://morphos-team.net/morphos-3.18.iso
-  iso_path="morphos-3.18.iso"
-  iso_selected=true
-  save_configuration
-  echo "MorphOS trial ISO downloaded."
-}
-
 # Initialize variables
 bios_selected=false
 iso_selected=false
@@ -364,6 +368,14 @@ pci_passthrough_enabled=false
 
 # Load the configuration
 load_configuration
+
+# Check if the script was invoked with a QEMU command
+if [[ $# -gt 0 && $1 == "--qemu-command" ]]; then
+  qemu_cmd=$2
+  echo "Running QEMU with the provided command..."
+  eval "$qemu_cmd"
+  exit 0
+fi
 
 # Main loop
 while true; do
@@ -381,31 +393,31 @@ while true; do
       ;;
 
     "3")
-      enable_pci_passthrough
+      enable_pci_passthrough_auto
       ;;
 
     "4")
-      disable_pci_passthrough
+      enable_pci_passthrough_manual
       ;;
 
     "5")
-      configure_memory
+      disable_pci_passthrough
       ;;
 
     "6")
-      view_configuration
+      configure_memory
       ;;
 
     "7")
+      view_configuration
+      ;;
+
+    "8")
       if $bios_selected && $iso_selected && $memory_selected; then
         run_qemu
       else
         echo "Missing configuration settings. Please configure BIOS, ISO, and memory options before running QEMU."
       fi
-      ;;
-
-    "8")
-      download_morphos_trial_iso
       ;;
 
     "9")
