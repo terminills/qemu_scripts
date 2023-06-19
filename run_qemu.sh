@@ -3,6 +3,80 @@
 # Configuration file
 config_file="config.txt"
 
+# Function to create log and config files with appropriate permissions
+create_files() {
+  local log_file="pci_passthrough.log"
+  local config_file="config.txt"
+
+  echo "Creating log and config files..."
+  # Create log file if it doesn't exist
+  if [ ! -f "$log_file" ]; then
+    touch "$log_file"
+    chmod 666 "$log_file"
+    echo "Log file created: $log_file"
+  fi
+
+  # Create config file if it doesn't exist
+  if [ ! -f "$config_file" ]; then
+    touch "$config_file"
+    chmod 666 "$config_file"
+    echo "Config file created: $config_file"
+  fi
+}
+# Function to elevate the script if not running as root
+elevate_script() {
+  if [[ $EUID -ne 0 ]]; then
+    echo "Not running as root. Elevating the script..."
+    exec sudo -E "$0" "$@"
+  fi
+}
+# Function to log kernel/driver responses
+log_kernel_responses() {
+  local action=$1
+  local pci_devices=$2
+
+  echo "Kernel/Driver Responses for $action:"
+  for pci_device in $pci_devices; do
+    local driver_name=$(basename "$(readlink -f "/sys/bus/pci/devices/$pci_device/driver")")
+    local response_file="/sys/bus/pci/devices/$pci_device/driver/$action"
+
+    if [ -f "$response_file" ]; then
+      local response=$(cat "$response_file")
+      echo "PCI Device: $pci_device"
+      echo "Driver: $driver_name"
+      echo "Response: $response"
+      echo
+    else
+      echo "Error: Failed to read response for $action of PCI device $pci_device"
+    fi
+  done
+
+  echo
+}
+
+# Create log and config files with appropriate permissions
+create_files
+
+# Elevate the script at the beginning
+elevate_script "$@"
+# Function to log kernel/driver responses
+log_kernel_responses() {
+  local action=$1
+  local pci_devices=$2
+
+  echo "Kernel/Driver Responses for $action:"
+  for pci_device in $pci_devices; do
+    local driver_name=$(basename "$(readlink -f "/sys/bus/pci/devices/$pci_device/driver")")
+    local response=$(cat "/sys/bus/pci/devices/$pci_device/driver/$action")
+
+    echo "PCI Device: $pci_device"
+    echo "Driver: $driver_name"
+    echo "Response: $response"
+    echo
+  done
+
+  echo
+}
 # Function to detect available PCI devices
 detect_pci_devices() {
   available_pci_devices=()
@@ -19,19 +93,28 @@ get_device_info() {
   echo "$device_info"
 }
 
-# Function to detach a PCI device from its current driver
+# Function to detach a PCI device from its current driver and log the commands and responses
 detach_pci_device() {
   local slot_info=$1
-  local driver_name=$(basename "$(readlink "/sys/bus/pci/devices/$slot_info/driver")")
-  echo "$slot_info" > "/sys/bus/pci/drivers/$driver_name/unbind"
+  local driver_name=$2
+  echo "$slot_info" > "/sys/bus/pci/devices/$driver_name/unbind"
   echo "$(date): Detached PCI device $slot_info" >> "pci_passthrough.log"
+
+  # Log the command and response
+  echo "Command: echo $slot_info > /sys/bus/pci/devices/$driver_name/unbind" >> "pci_passthrough.log"
+  echo "Response: $(cat /sys/bus/pci/devices/$driver_name/unbind)" >> "pci_passthrough.log"
 }
 
-# Function to attach a PCI device to the VFIO driver
+# Function to attach a PCI device to the VFIO driver and log the commands and responses
 attach_pci_device() {
   local vendor_id=$1
   local device_code=$2
-  echo "$vendor_id $device_code" > "/sys/bus/pci/drivers/vfio-pci/new_id"
+  echo -n "$vendor_id $device_code" > "/sys/bus/pci/drivers/vfio-pci/new_id"
+  echo "$(date): Attached PCI device $vendor_id $device_code to VFIO driver (Command: echo -n '$vendor_id $device_code' > '/sys/bus/pci/drivers/vfio-pci/new_id')" >> "pci_passthrough.log"
+
+  # Log the command and response
+  echo "Command: echo $vendor_id $device_code > /sys/bus/pci/drivers/vfio-pci/new_id" >> "pci_passthrough.log"
+  echo "Response: $(cat /sys/bus/pci/drivers/vfio-pci/new_id)" >> "pci_passthrough.log"
 }
 
 # Function to detect available ISO files in the script folder
@@ -56,6 +139,8 @@ detect_bios_files() {
 
 # Function to load the configuration from the config file
 load_configuration() {
+  echo "Current working directory: $(pwd)"
+  echo "$config_file"
   if [ -f "$config_file" ]; then
     source "$config_file"
 
@@ -74,6 +159,11 @@ load_configuration() {
     if [ -n "$memory" ]; then
       memory_selected=true
     fi
+  else
+    bios_selected=false
+    iso_selected=false
+    pci_passthrough_enabled=false
+    memory_selected=false
   fi
 }
 
@@ -88,7 +178,7 @@ save_configuration() {
 
 # Function to print the main menu
 print_main_menu() {
-  clear
+  #clear
   echo "Main Menu:"
   echo "1. Configuration Menu"
   echo "2. Run QEMU"
@@ -134,25 +224,11 @@ select_bios() {
     bios_selected=true
   elif [ "$bios_index" == "d" ]; then
     # Download the Pegasos ROM
-    bios_url="http://web.archive.org/web/20071021223056/http://www.bplan-gmbh.de/up050404/up050404"
-    bios_filename="up050404"
-    echo "Downloading Pegasos ROM..."
-    if curl -L -o "$bios_filename" "$bios_url"; then
-      bios_path="./pegasos2.rom"
-      bios_selected=true
-      echo "Download successful."
-      # Extract the ROM
-      echo "Extracting Pegasos ROM..."
-      tail -c +85581 "$bios_filename" | head -c 524288 > "pegasos2.rom"
-      echo "Extraction successful."
-    else
-      echo "Download failed. Please try again."
-    fi
+    download_rom
   else
     echo "Invalid selection. Please try again."
   fi
 }
-
 
 # Function to prompt the user for ISO selection
 select_iso() {
@@ -175,16 +251,7 @@ select_iso() {
     iso_selected=true
   elif [ "$iso_index" == "d" ]; then
     # Download the MorphOS installer/trial ISO
-    iso_url="https://morphos-team.net/morphos-3.18.iso"
-    iso_filename="morphos-3.18.iso"
-    echo "Downloading MorphOS installer/trial ISO..."
-    if curl -L -o "$iso_filename" "$iso_url"; then
-      iso_path="./$iso_filename"
-      iso_selected=true
-      echo "Download successful."
-    else
-      echo "Download failed. Please try again."
-    fi
+    download_iso
   else
     echo "Invalid selection. Please try again."
   fi
@@ -508,14 +575,41 @@ while true; do
 
     "2" | "")
       if $bios_selected && $iso_selected && $memory_selected; then
-        if [ -t 0 ]; then
-          run_qemu
-        else
-          run_qemu -serial stdio
-        fi
-      else
-        echo "Missing configuration settings. Please configure BIOS, ISO, and memory options before running QEMU."
-      fi
+  # Check if PCI passthrough is enabled and there are selected devices
+  if [ -n "$pci_device_options" ] && $pci_passthrough_enabled; then
+    # Unbind selected PCI devices
+    for pci_device in $pci_device_options; do
+      unbind_pci_device "$pci_device"
+    done
+
+    # Log the unbinding of PCI devices
+    echo "$(date): Unbound PCI devices: $pci_device_options" >> "pci_passthrough.log"
+    log_kernel_responses "Unbinding" "$pci_device_options"
+
+    # Start QEMU with the selected configuration
+    echo "Starting QEMU with the following command:"
+    echo "$qemu_cmd"
+
+    # Log the QEMU command
+    echo "QEMU Command: $qemu_cmd" >> "pci_passthrough.log"
+
+    # Bind selected PCI devices to VFIO driver
+for pci_device in $pci_device_options; do
+  attach_pci_device "$pci_device"
+done
+
+    # Log the binding of PCI devices
+    echo "$(date): Bound PCI devices: $pci_device_options" >> "pci_passthrough.log"
+    log_kernel_responses "Binding" "$pci_device_options"
+  else
+    # Start QEMU with the selected configuration
+    echo "Starting QEMU with the following command:"
+    echo "$qemu_cmd"
+  fi
+else
+  echo "Missing configuration settings. Please configure BIOS, ISO, and memory options before running QEMU."
+fi
+
       ;;
 
     "3")
