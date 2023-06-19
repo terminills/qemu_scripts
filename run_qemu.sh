@@ -197,16 +197,52 @@ configure_pci_passthrough() {
   # Exclude boot drive controller and display
   excluded_devices=("boot_drive_controller" "display")
 
-  # Display available PCI devices
-  echo "PCI devices available for passthrough:"
-  for index in "${!available_pci_devices[@]}"; do
-    pci_device="${available_pci_devices[index]}"
-    if [[ ! " ${excluded_devices[@]} " =~ " ${pci_device} " ]]; then
-      echo "$index: $pci_device"
-      device_info=$(get_device_info "$pci_device")
-      echo "$device_info"
-      echo
-    fi
+  # Display available PCI devices with pagination
+  page=0
+  page_size=10
+  total_devices=${#available_pci_devices[@]}
+  max_pages=$((total_devices / page_size))
+  if ((total_devices % page_size > 0)); then
+    max_pages=$((max_pages + 1))
+  fi
+
+  while true; do
+    clear
+    echo "PCI devices available for passthrough (Page $((page + 1))/$max_pages):"
+    start_index=$((page * page_size))
+    end_index=$((start_index + page_size))
+
+    for index in "${!available_pci_devices[@]}"; do
+      if [[ index -ge start_index && index -lt end_index ]]; then
+        pci_device="${available_pci_devices[index]}"
+        if [[ ! " ${excluded_devices[@]} " =~ " ${pci_device} " ]]; then
+          echo "$index: $pci_device"
+          device_info=$(get_device_info "$pci_device")
+          echo "$device_info"
+          echo
+        fi
+      fi
+    done
+
+    read -n 1 -s -r -p "Press 'n' for the next page, 'p' for the previous page, or any other key to continue: " choice
+
+    case $choice in
+      "n")
+        if ((page < max_pages - 1)); then
+          page=$((page + 1))
+        fi
+        ;;
+
+      "p")
+        if ((page > 0)); then
+          page=$((page - 1))
+        fi
+        ;;
+
+      *)
+        break
+        ;;
+    esac
   done
 
   # Prompt the user to select specific PCI devices or choose automatic passthrough
