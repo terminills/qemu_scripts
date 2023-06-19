@@ -24,6 +24,7 @@ detach_pci_device() {
   local slot_info=$1
   local driver_name=$2
   echo "$slot_info" > "/sys/bus/pci/drivers/$driver_name/unbind"
+  echo "$(date): Detached PCI device $slot_info" >> "pci_passthrough.log"
 }
 
 # Function to attach a PCI device to the VFIO driver
@@ -154,7 +155,6 @@ select_bios() {
 
 
 # Function to prompt the user for ISO selection
-# Function to prompt the user for ISO selection
 select_iso() {
   echo "Reconfiguring ISO..."
   detect_iso_files
@@ -246,6 +246,7 @@ configure_pci_passthrough() {
 
   pci_passthrough_enabled=true
 }
+
 # Function to toggle the enable/disable state of PCI passthrough
 toggle_pci_passthrough() {
   if $pci_passthrough_enabled; then
@@ -314,16 +315,23 @@ exit_script() {
 
 # Function to run QEMU with the selected configuration
 run_qemu() {
+  # Determine if running on console or XWindows
+  if [ -t 0 ]; then
+    # Running on console
+    qemu_cmd="qemu-system-ppc -L pc-bios -M pegasos2 -nographic -monitor telnet::45454,server,nowait -serial mon:stdio"
+  else
+    # Running on XWindows
+    qemu_cmd="qemu-system-ppc -L pc-bios -M pegasos2 -vga none -device sm501 -serial stdio"
+  fi
+
   # Build the full QEMU command
-  qemu_cmd="qemu-system-ppc -L pc-bios -M pegasos2"
   qemu_cmd+=" -bios \"$bios_path\""
-  qemu_cmd+=" -vga none -device sm501"
 
   # Set ISO options based on user configuration
   qemu_cmd+=" -drive if=none,id=cd,file=$iso_path,format=raw -device ide-cd,drive=cd,bus=ide.1"
 
   qemu_cmd+=" -device rtl8139,netdev=net0 -netdev user,id=net0"
-  qemu_cmd+=" -rtc base=localtime -serial stdio"
+  qemu_cmd+=" -rtc base=localtime"
 
   # Add memory options based on user configuration
   qemu_cmd+=" -m $memory"
@@ -349,6 +357,40 @@ run_qemu() {
     # Return to the main menu after QEMU exits
     echo "QEMU has exited. Returning to the main menu..."
     read -n 1 -s -r -p "Press any key to continue..."
+  fi
+}
+
+# Function to download the Pegasos ROM
+download_rom() {
+  bios_url="http://web.archive.org/web/20071021223056/http://www.bplan-gmbh.de/up050404/up050404"
+  bios_filename="up050404"
+
+  echo "Downloading Pegasos ROM..."
+  if curl -L -o "$bios_filename" "$bios_url"; then
+    bios_path="./pegasos2.rom"
+    bios_selected=true
+    echo "Download successful."
+    # Extract the ROM
+    echo "Extracting Pegasos ROM..."
+    tail -c +85581 "$bios_filename" | head -c 524288 > "pegasos2.rom"
+    echo "Extraction successful."
+  else
+    echo "Download failed. Please try again."
+  fi
+}
+
+# Function to download the MorphOS ISO
+download_iso() {
+  iso_url="https://morphos-team.net/morphos-3.18.iso"
+  iso_filename="morphos-3.18.iso"
+
+  echo "Downloading MorphOS installer/trial ISO..."
+  if curl -L -o "$iso_filename" "$iso_url"; then
+    iso_path="./$iso_filename"
+    iso_selected=true
+    echo "Download successful."
+  else
+    echo "Download failed. Please try again."
   fi
 }
 
@@ -426,7 +468,11 @@ while true; do
 
     "2" | "")
       if $bios_selected && $iso_selected && $memory_selected; then
-        run_qemu
+        if [ -t 0 ]; then
+          run_qemu
+        else
+          run_qemu -serial stdio
+        fi
       else
         echo "Missing configuration settings. Please configure BIOS, ISO, and memory options before running QEMU."
       fi
