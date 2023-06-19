@@ -22,7 +22,7 @@ get_device_info() {
 # Function to detach a PCI device from its current driver
 detach_pci_device() {
   local slot_info=$1
-  local driver_name=$2
+  local driver_name=$(basename "$(readlink "/sys/bus/pci/devices/$slot_info/driver")")
   echo "$slot_info" > "/sys/bus/pci/drivers/$driver_name/unbind"
   echo "$(date): Detached PCI device $slot_info" >> "pci_passthrough.log"
 }
@@ -375,6 +375,10 @@ run_qemu() {
   # Add PCI device options if configured and enabled
   if [ -n "$pci_device_options" ] && $pci_passthrough_enabled; then
     for pci_device in $pci_device_options; do
+      vendor_id=$(lspci -n -s "$pci_device" | awk '{print $3}' | sed 's/:/ /')
+      device_code=$(lspci -n -s "$pci_device" | awk '{print $4}')
+      detach_pci_device "$pci_device"
+      attach_pci_device "$vendor_id" "$device_code"
       qemu_cmd+=" -device vfio-pci,host=$pci_device"
     done
   fi
