@@ -1,7 +1,9 @@
+import urllib.request
+import platform
 import subprocess
 import sys
-from distro import linux_distribution
-
+import os
+import distro
 
 def run_command(command):
     """
@@ -9,23 +11,20 @@ def run_command(command):
     """
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     output, error = process.communicate()
-    output = output.decode().strip()
-    error = error.decode().strip()
-    return output, error
-
+    return output.decode().strip(), error.decode().strip()
 
 def install_package(package):
     """
     Install a package using the system's package manager.
     """
-    distro_info = linux_distribution(full_distribution_name=False)
+    os_name = distro.name().lower()
     package_manager = ""
 
-    if "debian" in distro_info[0].lower() or "ubuntu" in distro_info[0].lower():
+    if os_name in ["debian", "ubuntu"]:
         package_manager = "apt"
-    elif "arch" in distro_info[0].lower():
+    elif os_name == "arch":
         package_manager = "pacman"
-    elif "rhel" in distro_info[0].lower() or "centos" in distro_info[0].lower():
+    elif os_name in ["rhel", "centos"]:
         package_manager = "yum"
 
     if package_manager:
@@ -39,7 +38,6 @@ def install_package(package):
         print("Package manager not found for your operating system.")
         sys.exit(1)
 
-
 def check_and_install_commands(commands):
     """
     Check if commands are available and install missing ones.
@@ -49,13 +47,12 @@ def check_and_install_commands(commands):
         if not output:
             install_package(command)
 
-
 def detect_virtualization():
     """
     Detect the virtualization system enabled on the kernel.
     """
     dmesg_output, _ = run_command("dmesg")
-    virtualization_systems = ["KVM", "kvm", "Xen", "VMware", "Microsoft Hyper-V"]
+    virtualization_systems = ["KVM", "Xen", "VMware", "Microsoft Hyper-V"]
 
     for system in virtualization_systems:
         if system in dmesg_output:
@@ -64,18 +61,16 @@ def detect_virtualization():
 
     return None
 
-
 def unbind_devices(system):
     """
     Unbind PCI devices from their current drivers based on the virtualization system.
     """
-    if system in ["KVM", "kvm", "Xen", "VMware"]:
-        devices_output, _ = run_command("lspci -nn | grep 'VGA\|Audio\|USB' | cut -d ' ' -f 1")
-        devices = devices_output.split("\n")
-        for device in devices:
+    if system in ["KVM", "Xen", "VMware"]:
+        devices, _ = run_command("lspci -nn | grep 'VGA' | cut -d ' ' -f 1")
+        for device in devices.split("\n"):
             if device:
-                unbind_command = f"sudo sh -c 'echo 0000:{device} > /sys/bus/pci/devices/0000:{device}/driver/unbind'"
-                output, error = run_command(unbind_command)
+                command = f"sudo sh -c 'echo {device} > /sys/bus/pci/drivers/pciback/new_slot'"
+                output, error = run_command(command)
                 if error:
                     print(f"Failed to unbind device {device}. Error: {error}")
                 else:
@@ -86,92 +81,56 @@ def unbind_devices(system):
         print("Virtualization system not supported.")
         sys.exit(1)
 
-
-def bind_devices(system):
-    """
-    Bind PCI devices to their appropriate drivers based on the virtualization system.
-    """
-    if system in ["KVM", "kvm", "Xen", "VMware"]:
-        devices_output, _ = run_command("lspci -nn | grep 'VGA\|Audio\|USB' | cut -d ' ' -f 1")
-        devices = devices_output.split("\n")
-        for device in devices:
-            if device:
-                bind_command = f"sudo sh -c 'echo {device} > /sys/bus/pci/drivers/{system.lower()}/bind'"
-                output, error = run_command(bind_command)
-                if error:
-                    print(f"Failed to bind device {device}. Error: {error}")
-                else:
-                    print(f"Bound device {device} successfully.")
-    elif system == "Microsoft Hyper-V":
-        print("Hyper-V detected. No need to bind devices.")
+def bind_device(device_id):
+    command = f"sudo modprobe vfio-pci ids={device_id}"
+    output, error = run_command(command)
+    if error:
+        print(f"Failed to bind device {device_id} with vfio-pci. Error: {error}")
     else:
-        print("Virtualization system not supported.")
-        sys.exit(1)
+        print(f"Bound device {device_id} with vfio-pci successfully.")
 
-
-def test_devices_with_qemu(devices):
-    """
-    Test the devices using QEMU.
-    """
-    for device in devices:
-        print(f"Testing device: {device}")
-        qemu_command = f"qemu-system-x86_64 -nographic -enable-kvm -m 4G -cpu host -device vfio-pci,host={device}"
-        output, error = run_command(qemu_command)
-        if error:
-            print(f"Failed to run QEMU command for device {device}. Error: {error}")
-        else:
-            print(f"Successfully ran QEMU command for device {device}.")
-
-
-def release_devices(system, devices):
-    """
-    Release the devices from their virtualization bindings.
-    """
-    if system in ["KVM", "kvm", "Xen", "VMware"]:
-        for device in devices:
-            if device:
-                release_command = f"sudo sh -c 'echo {device} > /sys/bus/pci/drivers/{system.lower()}/unbind'"
-                output, error = run_command(release_command)
-                if error:
-                    print(f"Failed to release device {device}. Error: {error}")
-                else:
-                    print(f"Released device {device} successfully.")
-    elif system == "Microsoft Hyper-V":
-        print("Hyper-V detected. No need to release devices.")
-    else:
-        print("Virtualization system not supported.")
-        sys.exit(1)
-
+def download_file(url, destination):
+    try:
+        urllib.request.urlretrieve(url, destination)
+        print(f"Downloaded file from {url} successfully.")
+    except Exception as e:
+        print(f"Failed to download file from {url}. Error: {e}")
 
 def main():
-    # List of commands to check and install if missing
-    required_commands = ["lshw", "lspci", "dmesg", "qemu-system-x86_64"]
-
+    required_commands = ["lspci", "dmesg", "modprobe"]
     check_and_install_commands(required_commands)
+
     virtualization_system = detect_virtualization()
 
     if virtualization_system:
-        print(f"Detected virtualization system: {virtualization_system}")
-
-        print("Unbinding devices...")
         unbind_devices(virtualization_system)
 
-        # Get a list of available PCI devices
-        devices_output, _ = run_command("lspci -nn")
-        devices = [line.split()[0] for line in devices_output.split("\n")]
+        # Find and bind the VGA card with vfio-pci
+        vga_card_device_id = ""
+        devices, _ = run_command("lspci -nn | grep 'VGA' | cut -d ' ' -f 1")
+        for device in devices.split("\n"):
+            if device:
+                vga_card_device_id = device
+                bind_device(vga_card_device_id)
+                break
 
-        print("Binding devices...")
-        bind_devices(virtualization_system)
+        if vga_card_device_id:
+            # Download TinyCore Linux ISO
+            iso_url = "http://tinycorelinux.net/14.x/x86/release/Core-current.iso"
+            iso_destination = "tinycore.iso"
+            download_file(iso_url, iso_destination)
 
-        print("Testing devices with QEMU...")
-        test_devices_with_qemu(devices)
-
-        print("Releasing devices...")
-        release_devices(virtualization_system, devices)
-
+            # Run QEMU with TinyCore Linux ISO
+            qemu_command = f"qemu-system-x86_64 -nographic -enable-kvm -m 4G -cpu host -device vfio-pci,host={vga_card_device_id} -cdrom {iso_destination}"
+            output, error = run_command(qemu_command)
+            if error:
+                print(f"Failed to run QEMU. Error: {error}")
+            else:
+                print("QEMU started successfully.")
+        else:
+            print("No VGA card found for binding.")
     else:
         print("No supported virtualization system detected.")
-
 
 if __name__ == "__main__":
     main()
