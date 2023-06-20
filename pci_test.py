@@ -1,7 +1,7 @@
-import platform
 import subprocess
 import sys
 import time
+import distro
 
 
 def run_command(command):
@@ -17,24 +17,25 @@ def install_package(package):
     """
     Install a package using the system's package manager.
     """
-    os_name = platform.dist()[0].lower()
+    distro_name = distro.id().lower()
     package_manager = ""
 
-    if os_name in ["debian", "ubuntu"]:
+    if distro_name in ["debian", "ubuntu"]:
         package_manager = "apt"
-    elif os_name in ["arch", "arch linux"]:
+    elif distro_name in ["arch", "archlinux"]:
         package_manager = "pacman"
-    elif os_name in ["rhel", "centos"]:
+    elif distro_name in ["rhel", "centos"]:
         package_manager = "yum"
 
     if package_manager:
-        command = f"sudo {package_manager} install -y {package}"
+        command = f"{package_manager} install -y {package}"
+        if sys.platform != "win32" and os.geteuid() != 0:
+            command = f"{command}"
         run_command(command)
         print(f"Installed {package} successfully.")
     else:
         print("Package manager not found for your operating system.")
         sys.exit(1)
-
 
 def check_and_install_commands(commands):
     """
@@ -71,14 +72,14 @@ def unbind_devices(system):
             if device:
                 location = run_command(f"find /sys/devices -name {device}")
                 if location:
-                    run_command(f"sudo sh -c 'echo {device} > {location}/driver/unbind'")
+                    run_command(f"sh -c 'echo {device} > {location}/driver/unbind'")
                     with open("unbind_device.log", "a") as f:
                         f.write(f"Unbinding Location ({device}): {location}\n")
     elif system == "VMware":
         devices = run_command("lspci -nn -D | grep 'VGA\|Audio\|USB' | cut -d ' ' -f 1")
         for device in devices.split("\n"):
             if device:
-                run_command(f"sudo sh -c 'echo {device} > /sys/bus/pci/drivers/vfio-pci/bind'")
+                run_command(f"sh -c 'echo {device} > /sys/bus/pci/drivers/vfio-pci/bind'")
     elif system == "Microsoft Hyper-V":
         print("Hyper-V detected. No need to unbind devices.")
     else:
@@ -92,9 +93,9 @@ def bind_device(device, driver):
     """
     location = run_command(f"find /sys/devices -name {device}")
     if location:
-        run_command(f"sudo sh -c 'echo {device} > {location}/driver_override'")
-        run_command(f"sudo sh -c 'echo {driver} > {location}/driver/unbind'")
-        run_command(f"sudo sh -c 'echo {device} > /sys/bus/pci/drivers/{driver}/bind'")
+        run_command(f"sh -c 'echo {device} > {location}/driver_override'")
+        run_command(f"sh -c 'echo {driver} > {location}/driver/unbind'")
+        run_command(f"sh -c 'echo {device} > /sys/bus/pci/drivers/{driver}/bind'")
         time.sleep(1)  # Wait for the device to bind
 
 
@@ -102,7 +103,7 @@ def get_pci_device_type(device):
     """
     Get the type of the PCI device using lshw.
     """
-    output = run_command("sudo lshw -businfo")
+    output = run_command("lshw -businfo")
     lines = output.split("\n")
     device_type = None
 
