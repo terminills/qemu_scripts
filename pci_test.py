@@ -22,7 +22,7 @@ def install_package(package):
 
     if distro_name in ["debian", "ubuntu"]:
         package_manager = "apt"
-    elif distro_name in ["arch", "archlinux"]:
+    elif distro_name in ["arch", "archlinux", "arch linux"]:
         package_manager = "pacman"
     elif distro_name in ["rhel", "centos"]:
         package_manager = "yum"
