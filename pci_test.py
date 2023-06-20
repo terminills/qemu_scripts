@@ -29,14 +29,13 @@ def install_package(package):
 
     if package_manager:
         command = f"{package_manager} install -y {package}"
-        if sys.platform != "win32" and os.geteuid() != 0:
-            command = f"{command}"
+        if os.geteuid() != 0:
+            command = f"sudo {command}"
         run_command(command)
         print(f"Installed {package} successfully.")
     else:
         print("Package manager not found for your operating system.")
         sys.exit(1)
-
 def check_and_install_commands(commands):
     """
     Check if commands are available and install missing ones.
