@@ -1,6 +1,6 @@
-import platform
 import subprocess
 import sys
+from distro import linux_distribution
 
 
 def run_command(command):
@@ -18,14 +18,14 @@ def install_package(package):
     """
     Install a package using the system's package manager.
     """
-    os_name = platform.system().lower()
+    distro_info = linux_distribution(full_distribution_name=False)
     package_manager = ""
 
-    if os_name in ["debian", "ubuntu"]:
+    if "debian" in distro_info[0].lower() or "ubuntu" in distro_info[0].lower():
         package_manager = "apt"
-    elif os_name in ["arch"]:
+    elif "arch" in distro_info[0].lower():
         package_manager = "pacman"
-    elif os_name in ["rhel", "centos"]:
+    elif "rhel" in distro_info[0].lower() or "centos" in distro_info[0].lower():
         package_manager = "yum"
 
     if package_manager:
@@ -157,8 +157,8 @@ def main():
         unbind_devices(virtualization_system)
 
         # Get a list of available PCI devices
-        lspci_output, _ = run_command("lspci -nn")
-        devices = [line.split()[0] for line in lspci_output.split("\n")]
+        devices_output, _ = run_command("lspci -nn")
+        devices = [line.split()[0] for line in devices_output.split("\n")]
 
         print("Binding devices...")
         bind_devices(virtualization_system)
