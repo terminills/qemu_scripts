@@ -1,6 +1,7 @@
 import platform
 import subprocess
 import sys
+import time
 
 
 def run_command(command):
@@ -16,12 +17,12 @@ def install_package(package):
     """
     Install a package using the system's package manager.
     """
-    os_name = platform.system().lower()
+    os_name = platform.dist()[0].lower()
     package_manager = ""
 
     if os_name in ["debian", "ubuntu"]:
         package_manager = "apt"
-    elif os_name in ["arch"]:
+    elif os_name in ["arch", "arch linux"]:
         package_manager = "pacman"
     elif os_name in ["rhel", "centos"]:
         package_manager = "yum"
@@ -50,7 +51,7 @@ def detect_virtualization():
     Detect the virtualization system enabled on the kernel.
     """
     dmesg_output = run_command("dmesg")
-    virtualization_systems = ["KVM", "Xen", "VMware", "Microsoft Hyper-V"]
+    virtualization_systems = ["KVM", "kvm", "Xen", "VMware", "Microsoft Hyper-V"]
 
     for system in virtualization_systems:
         if system in dmesg_output:
@@ -64,20 +65,17 @@ def unbind_devices(system):
     """
     Unbind PCI devices from their current drivers based on the virtualization system.
     """
-    if system == "KVM":
-        devices = run_command("lspci -nn | grep 'VGA\|Audio\|USB' | cut -d ' ' -f 1")
+    if system.lower() in ["kvm", "xen"]:
+        devices = run_command("lspci -nn -D | grep 'VGA\|Audio\|USB' | cut -d ' ' -f 1")
         for device in devices.split("\n"):
             if device:
                 location = run_command(f"find /sys/devices -name {device}")
                 if location:
                     run_command(f"sudo sh -c 'echo {device} > {location}/driver/unbind'")
-    elif system == "Xen":
-        devices = run_command("lspci -nn | grep 'VGA\|Audio\|USB' | cut -d ' ' -f 1")
-        for device in devices.split("\n"):
-            if device:
-                run_command(f"sudo sh -c 'echo {device} > /sys/bus/pci/drivers/pciback/new_slot'")
+                    with open("unbind_device.log", "a") as f:
+                        f.write(f"Unbinding Location ({device}): {location}\n")
     elif system == "VMware":
-        devices = run_command("lspci -nn | grep 'VGA\|Audio\|USB' | cut -d ' ' -f 1")
+        devices = run_command("lspci -nn -D | grep 'VGA\|Audio\|USB' | cut -d ' ' -f 1")
         for device in devices.split("\n"):
             if device:
                 run_command(f"sudo sh -c 'echo {device} > /sys/bus/pci/drivers/vfio-pci/bind'")
@@ -86,6 +84,18 @@ def unbind_devices(system):
     else:
         print("Virtualization system not supported.")
         sys.exit(1)
+
+
+def bind_device(device, driver):
+    """
+    Bind a device to a specific driver.
+    """
+    location = run_command(f"find /sys/devices -name {device}")
+    if location:
+        run_command(f"sudo sh -c 'echo {device} > {location}/driver_override'")
+        run_command(f"sudo sh -c 'echo {driver} > {location}/driver/unbind'")
+        run_command(f"sudo sh -c 'echo {device} > /sys/bus/pci/drivers/{driver}/bind'")
+        time.sleep(1)  # Wait for the device to bind
 
 
 def get_pci_device_type(device):
@@ -109,8 +119,7 @@ def build_qemu_command(device):
     """
     Build and execute QEMU commands for PCI passthrough.
     """
-    # Build your QEMU command using the provided device
-    command = f"qemu-system-x86_64 -nographic -enable-kvm -m 4G -cpu host -device vfio-pci,host={device}"
+    command = f"qemu-system-ppc -nographic -enable-kvm -m 1G -cpu host -device vfio-pci,host={device}"
 
     # Run the command and capture the output and error
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -134,15 +143,17 @@ def build_qemu_command(device):
         return error
 
 
-def log_valid_pci_ids(pci_id, device_type, qemu_device_config, location):
+def log_valid_pci_ids(pci_id, device_type, kernel_driver, device_name, unbind_location, qemu_device_config):
     """
-    Log valid PCI IDs, device types, and their QEMU device configurations in a file.
+    Log valid PCI IDs, device types, kernel driver, device name, unbind location, and QEMU device configurations in a file.
     """
     with open("valid_pci_id.txt", "a") as f:
         f.write(f"PCI ID: {pci_id}\n")
         f.write(f"Device Type: {device_type}\n")
-        f.write(f"QEMU Device Config: {qemu_device_config}\n")
-        f.write(f"Location: {location}\n\n")
+        f.write(f"Kernel Driver: {kernel_driver}\n")
+        f.write(f"Device Name: {device_name}\n")
+        f.write(f"Unbind Location: {unbind_location}\n")
+        f.write(f"QEMU Device Config: {qemu_device_config}\n\n")
 
 
 def main():
@@ -156,19 +167,36 @@ def main():
         unbind_devices(virtualization_system)
 
         # Get a list of available PCI devices
-        lspci_output = run_command("lspci -nn")
+        lspci_output = run_command("lspci -nn -D")
         devices = []
         for line in lspci_output.split("\n"):
-            devices.append(line.split()[0])
+            device_info = line.split(" ")[0]
+            if device_info:
+                devices.append(device_info)
 
         # Build and test QEMU commands for each device
         for device in devices:
             print(f"Testing device: {device}")
             device_type = get_pci_device_type(device)
+            output = run_command(f"lspci -nn -D -v -s {device}")
+            kernel_driver = ""
+            device_name = ""
+            unbind_location = ""
+            for line in output.split("\n"):
+                if "Kernel driver in use:" in line:
+                    kernel_driver = line.split(": ")[-1]
+                elif "DeviceName:" in line:
+                    device_name = line.split(": ")[-1]
+                elif "Unbind location:" in line:
+                    unbind_location = line.split(": ")[-1]
             result = build_qemu_command(device)
             if "error" not in result.lower():
-                location = run_command(f"find /sys/devices -name {device}")
-                log_valid_pci_ids(device, device_type, f"vfio-pci,host={device}", location)
+                log_valid_pci_ids(device, device_type, kernel_driver, device_name, unbind_location,
+                                  f"vfio-pci,host={device}")
+                bind_device(device, kernel_driver)
+                time.sleep(1)  # Wait for the device to bind
+                # Put the device back one by one
+                bind_device(device, "vfio-pci")
             else:
                 print(f"Failed to run QEMU command for device {device}. Error: {result}")
 
